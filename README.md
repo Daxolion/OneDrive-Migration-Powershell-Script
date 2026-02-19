@@ -31,12 +31,13 @@ This PowerShell script copies files from OneDrive to a destination folder (defau
    - Confirm OneDrive account type
    - Choose the source
    - Select the source dehydrate mode
-   - Choose or enter a destination folder
+   - Choose or enter a destination folder (for "Custom" the exact folder is used)
 
 ## What the script does
 - Lists all files under the OneDrive source (no folders)
 - Hydrates cloud-only files when needed
-- Copies into `OneDriveMigration` (for cloud destinations) or the custom folder
+- Copies into `OneDriveMigration` for detected cloud destinations
+- If you choose "Custom", files are copied directly into the folder you enter (no extra subfolder is created)
 - Verifies each file (size check)
 - Optionally dehydrates source files, based on your selection
 

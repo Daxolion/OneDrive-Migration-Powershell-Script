@@ -2,6 +2,7 @@
 $LogFile = Join-Path -Path $desktopPath -ChildPath "OneDrive_Migration.log"
 $script:PollSeconds = 2
 $script:HydrateTimeoutSeconds = 1800
+$script:MaxPathLength = 260
 
 Set-StrictMode -Version Latest
 
@@ -350,6 +351,16 @@ function Test-CloudOnly {
     }
 }
 
+function Test-PathTooLong {
+    param(
+        [string]$Path,
+        [int]$MaxLength = $script:MaxPathLength
+    )
+
+    if ([string]::IsNullOrEmpty($Path)) { return $false }
+    return ($Path.Length -ge $MaxLength)
+}
+
 function Invoke-HydrateFile {
     param([string]$Path)
 
@@ -586,6 +597,17 @@ try {
         $dst = Join-Path -Path $DestRoot -ChildPath $rel
         $dstDir = Split-Path -Path $dst -Parent
         $wasHydrated = $false
+
+        if ((Test-PathTooLong -Path $src) -or (Test-PathTooLong -Path $dst)) {
+            $errCount++
+            $errMsg = "ERROR at [$index/$total] $rel : Path too long (max $script:MaxPathLength). Skipped."
+            $errList += $errMsg
+            Write-Log $errMsg -Level "ERROR"
+
+            $currentTask = "Error (path too long)"
+            Update-ProgressUi -Index $index -Total $total -CurrentTask $currentTask -LastMoved $lastMoved
+            continue
+        }
 
         $currentTask = "Checking file: $rel"
         Update-ProgressUi -Index $index -Total $total -CurrentTask $currentTask -LastMoved $lastMoved
