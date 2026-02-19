@@ -5,6 +5,9 @@ $script:HydrateTimeoutSeconds = 1800
 
 Set-StrictMode -Version Latest
 
+$script:OriginalProgressPreference = $ProgressPreference
+$ProgressPreference = 'Continue'
+
 # --- Files to skip ---
 $SkipFileNames = @('desktop.ini', 'Thumbs.db', '.ds_store', '.sync', '.owncloudsync.log')
 
@@ -51,17 +54,9 @@ function Update-ProgressUi {
     if ([string]::IsNullOrWhiteSpace($CurrentTask)) { $CurrentTask = "Ready..." }
     if ([string]::IsNullOrWhiteSpace($LastMoved)) { $LastMoved = "None yet" }
 
-    $barWidth = 28
-    $filled = [Math]::Floor(($percent / 100) * $barWidth)
-    $empty = $barWidth - $filled
-    $bar = ("#" * $filled) + ("-" * $empty)
-
-    Clear-Host
-    Show-Header
-    Write-Information "" -InformationAction Continue
-    Write-Information ("Progress: [{0}] {1}% ({2}/{3})" -f $bar, $percent, $Index, $Total) -InformationAction Continue
-    Write-Information ("Current task: {0}" -f $CurrentTask) -InformationAction Continue
-    Write-Information ("Last moved:  {0}" -f $LastMoved) -InformationAction Continue
+    $status = "{0}%  |  {1}/{2} files" -f $percent, $Index, $Total
+    $currentOp = "{0} | Last: {1}" -f $CurrentTask, $LastMoved
+    Write-Progress -Activity "OneDrive Migration" -Status $status -CurrentOperation $currentOp -PercentComplete $percent
 }
 
 function Confirm-YesNo {
@@ -363,11 +358,8 @@ function Invoke-HydrateFile {
     }
 
     if (-not (Test-CloudOnly -Path $Path)) {
-        Write-Log "File is already local: $Path"
         return $false
     }
-
-    Write-Log "Hydrate (download): $Path"
 
     # Set pin attribute -> OneDrive downloads the file
     $attribOut = & attrib.exe +P -U "$Path" 2>&1
@@ -414,21 +406,17 @@ function Invoke-HydrateFile {
         $currentWaitMs = [Math]::Min($currentWaitMs * 2, $script:PollSeconds * 1000)
     }
 
-    Write-Log "Hydrate complete: $Path"
     return $true
 }
 
 function Invoke-DehydrateFile {
-    param([string]$Path, [string]$Label = "")
+    param([string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path)) { return }
 
     if (Test-CloudOnly -Path $Path) {
-        Write-Log "File is already cloud-only ($Label): $Path"
         return
     }
-
-    Write-Log "Dehydrate / free space ($Label): $Path"
     $attribOut = & attrib.exe -P +U "$Path" 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Log "attrib -P +U failed ($LASTEXITCODE): $attribOut | $Path" -Level "WARN"
@@ -576,7 +564,8 @@ try {
     # List files (metadata only, no download)
     # @() ensures we always get an array (even for 0 or 1 file)
     [array]$files = @(Get-ChildItem -LiteralPath $SourceRoot -File -Recurse -Force |
-        Where-Object { $SkipFileNames -notcontains $_.Name })
+        Where-Object { $SkipFileNames -notcontains $_.Name } |
+        Sort-Object -Property Length, FullName)
 
     $total     = $files.Count
     $index     = 0
@@ -606,17 +595,14 @@ try {
             $existingSize = (Get-Item -LiteralPath $dst -Force).Length
             $sourceSize   = $file.Length
             if ($existingSize -eq $sourceSize -and $sourceSize -gt 0) {
-                Write-Log "Already exists with same size - skipped: $rel"
                 # Dehydrate source if still local
                 $currentTask = "Skipped (already exists)"
                 Update-ProgressUi -Index $index -Total $total -CurrentTask $currentTask -LastMoved $lastMoved
                 if (Test-DehydrateSource -Mode $sourceDehydrateMode -WasHydrated $wasHydrated) {
-                    Invoke-DehydrateFile -Path $src -Label "Source"
+                    Invoke-DehydrateFile -Path $src
                 }
                 $skipCount++
                 continue
-            } else {
-                Write-Log "Destination exists but size differs (Src=$sourceSize Dst=$existingSize) - recopying"
             }
         }
 
@@ -634,21 +620,21 @@ try {
             # 3. Copy file
             $currentTask = "Copying file"
             Update-ProgressUi -Index $index -Total $total -CurrentTask $currentTask -LastMoved $lastMoved
-            Write-Log "Copy: $src -> $dst"
             Copy-FileStreaming -Src $src -Dst $dst
 
             # 4. Verify copy (size check)
             $currentTask = "Verifying copy"
             Update-ProgressUi -Index $index -Total $total -CurrentTask $currentTask -LastMoved $lastMoved
             Test-Copy -Src $src -Dst $dst
-            Write-Log "Copy verified (OK): $rel"
 
             # 5. Dehydrate source (free space on OneDrive)
             $currentTask = "Free space (Source)"
             Update-ProgressUi -Index $index -Total $total -CurrentTask $currentTask -LastMoved $lastMoved
             if (Test-DehydrateSource -Mode $sourceDehydrateMode -WasHydrated $wasHydrated) {
-                Invoke-DehydrateFile -Path $src -Label "Source/OneDrive"
+                Invoke-DehydrateFile -Path $src
             }
+
+            Write-Log "Completed: $rel"
 
             $okCount++
             $lastMoved = $rel
@@ -667,7 +653,7 @@ try {
             # Dehydrate source if it was hydrated
             try {
                 if (Test-DehydrateSource -Mode $sourceDehydrateMode -WasHydrated $wasHydrated) {
-                    Invoke-DehydrateFile -Path $src -Label "Source/Cleanup"
+                    Invoke-DehydrateFile -Path $src
                 }
             } catch {
                 Write-Log "Cleanup dehydrate failed: $src | $_" -Level "WARN"
@@ -704,6 +690,7 @@ try {
     Write-Log "LogFile: $LogFile"
 } finally {
     $script:ConsoleLogEnabled = $true
+    $ProgressPreference = $script:OriginalProgressPreference
     Write-Information "" -InformationAction Continue
     [void](Read-Input "Press Enter to close this script...")
 }
